@@ -2,7 +2,10 @@ from functools import wraps
 from psycopg2.extras import DictCursor
 import psycopg2
 
+from utils import backoff
 
+
+@backoff(excps=psycopg2.OperationalError)
 def conn_context_pg(dsl: dict):
     """
     Декоратор для подключения к базе данных postgres

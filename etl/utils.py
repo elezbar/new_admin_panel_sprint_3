@@ -31,8 +31,8 @@ def backoff(start_sleep_time=0.1,
                 try:
                     return func(*args, **kwargs)
                 except excps as e:
-                    logging.error(e)
-                    logging.info(f'Waiting for sleep is {t} seconds.')
+                    logging.exception(e)
+                    logging.info('Waiting for sleep is %d seconds.', t)
                     sleep(t)
                     t = start_sleep_time * factor if t < border_sleep_time\
                         else border_sleep_time
@@ -58,6 +58,9 @@ class JsonFileStorage():
 
     def retrieve_state(self) -> dict:
         """Загрузить состояние локально из постоянного хранилища"""
-        with open(self.file_path, 'r') as f:
-            data = json.loads(f.read())
-            return data
+        try:
+            with open(self.file_path, 'r') as f:
+                data = json.loads(f.read())
+                return data
+        except FileNotFoundError:
+            return {}

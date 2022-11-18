@@ -1,13 +1,12 @@
-from settings import init_json, file_json_path, dsl
-from psycopg2 import OperationalError
-from db import conn_context_pg, insert_temp_uuid
-from utils import JsonFileStorage
 
-from utils import backoff
+from psycopg2 import OperationalError
+
+from settings import Settings
+from db import insert_temp_uuid
+from utils import backoff, JsonFileStorage
 
 
 @backoff(excps=(OperationalError))
-@conn_context_pg(dsl)
 def extract_film_work(conn):
     """
     Функция сбора данных для elasticsearch по последним изменённиям film_work
@@ -37,8 +36,8 @@ def extract_film_work(conn):
         order by fw.modified
     """
     cursor = conn.cursor()
-    json_storage = JsonFileStorage(init_json=init_json,
-                                   file_path=file_json_path)
+    json_storage = JsonFileStorage(init_json=Settings.Config.init_json,
+                                   file_path=Settings.file_json_path)
     state = json_storage.retrieve_state()
     modified = state.get('film_work_modified')
     if not modified:
@@ -46,15 +45,18 @@ def extract_film_work(conn):
     else:
         filter = f"where fw.modified > '{modified}'"
     cursor.execute(select_film_work.format(filter))
-    rows = cursor.fetchall()
-    if rows:
-        state['film_work_modified'] = str(rows[-1]['modified'])
-        json_storage.save_state(state)
-    return rows
+    while rows := cursor.fetchmany(Settings.fetch_buff):
+        result = {
+            'save_to_file': {
+                'name': 'film_work',
+                'modified': str(rows[-1]['modified'])
+            },
+            'rows': rows
+        }
+        yield result
 
 
 @backoff(excps=(OperationalError))
-@conn_context_pg(dsl)
 def extract_genre(conn):
     """
     Функция сбора данных для elasticsearch по последним изменённиям genre
@@ -83,8 +85,8 @@ def extract_genre(conn):
         order by g.modified
     """
     cursor = conn.cursor()
-    json_storage = JsonFileStorage(init_json=init_json,
-                                   file_path=file_json_path)
+    json_storage = JsonFileStorage(init_json=Settings.Config.init_json,
+                                   file_path=Settings.file_json_path)
     state = json_storage.retrieve_state()
     modified = state.get('genre_modified')
     if not modified:
@@ -92,15 +94,18 @@ def extract_genre(conn):
     else:
         filter = f"where g.modified > '{modified}'"
     cursor.execute(select_genre.format(filter))
-    rows = cursor.fetchall()
-    if rows:
-        state['genre_modified'] = str(rows[-1]['modified'])
-        json_storage.save_state(state)
-    return rows
+    while rows := cursor.fetchmany(Settings.fetch_buff):
+        result = {
+            'save_to_file': {
+                'name': 'genre',
+                'modified': str(rows[-1]['modified'])
+            },
+            'rows': rows
+        }
+        yield result
 
 
 @backoff(excps=(OperationalError))
-@conn_context_pg(dsl)
 def extract_person(conn):
     """
     Функция сбора данных для elasticsearch по последним изменённиям person
@@ -115,9 +120,10 @@ def extract_person(conn):
         join content.person_film_work pfw on pfw.person_id = p.id
         {}
     """
+    result = {}
     cursor = conn.cursor()
-    json_storage = JsonFileStorage(init_json=init_json,
-                                   file_path=file_json_path)
+    json_storage = JsonFileStorage(init_json=Settings.Config.init_json,
+                                   file_path=Settings.file_json_path)
     state = json_storage.retrieve_state()
     modified = state.get('person_modified')
     if not modified:
@@ -125,12 +131,18 @@ def extract_person(conn):
     else:
         filter = f"where p.modified > '{modified}'"
     cursor.execute(select_person.format(filter))
-    rows = cursor.fetchall()
-    if rows:
-        state['person_modified'] = str(rows[-1]['modified'])
-        json_storage.save_state(state)
+    while rows := cursor.fetchmany(Settings.fetch_buff):
+        cursor_film_work = conn.cursor()
+        result = {
+            'save_to_file': {
+                'name': 'person',
+                'modified': str(rows[-1]['modified'])
+            }
+        }
         ids_update_film_work = set(row['film_work_id'] for row in rows)
-        insert = insert_temp_uuid(cursor, 'film_work_id', ids_update_film_work)
+        insert = insert_temp_uuid(cursor_film_work,
+                                  'film_work_id',
+                                  ids_update_film_work)
         select_film_work = """
             select
                 fw.id as fw_id,
@@ -151,6 +163,7 @@ def extract_person(conn):
             left join content.genre g on g.id = gfw.genre_id
             where fw.id in ({})
         """
-        cursor.execute(select_film_work.format(insert))
-        rows = cursor.fetchall()
-    return rows
+        cursor_film_work.execute(select_film_work.format(insert))
+        result['rows'] = cursor_film_work.fetchall()
+        cursor_film_work.close()
+        yield result
